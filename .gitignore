@@ -1,0 +1,13 @@
+# Environments
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# ML Models & Data
+*.pkl
+output.json
+
+# OS files
+.DS_Store

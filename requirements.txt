@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pydantic
+numpy
+scipy
+earthengine-api
+requests
+xgboost
+scikit-learn

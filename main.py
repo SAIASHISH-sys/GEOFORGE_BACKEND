@@ -1,8 +1,23 @@
 import numpy as np
 import pickle
 import json
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+import ee
+import math
+import requests
+import time
+
+# -------------------------
+# 🌍 INIT GEE (SAFE)
+# -------------------------
+try:
+    ee.Initialize(project='soy-objective-490610-a6')
+    print("✅ GEE Initialized")
+except Exception as e:
+    print("💥 GEE INIT FAILED:", e)
+    # Raising here to match the provided script's behavior, though it might stop app startup.
+    raise e
 
 # -----------------------------
 # Load ML model
@@ -139,3 +154,123 @@ def get_params(loc: LocationInput):
 @app.get("/")
 def home():
     return {"message": "API running"}
+
+# -------------------------
+# 🌱 SOIL DATA (SoilGrids with retry)
+# -------------------------
+def get_soil(lat, lon):
+    url = f"https://rest.isric.org/soilgrids/v2.0/properties/query?lat={lat}&lon={lon}&property=clay&property=sand&property=bdod&depth=0-30cm"
+
+    for i in range(3):
+        try:
+            res = requests.get(url, timeout=5)
+
+            if res.status_code == 200:
+                data = res.json()
+                layers = data.get('properties', {}).get('layers', [])
+
+                clay = sand = bdod = 0
+
+                for layer in layers:
+                    try:
+                        val = layer['depths'][0]['values']['mean']
+                        if layer['name'] == 'clay':
+                            clay = val
+                        elif layer['name'] == 'sand':
+                            sand = val
+                        elif layer['name'] == 'bdod':
+                            bdod = val
+                    except:
+                        continue
+
+                return clay, sand, bdod
+
+            else:
+                print(f"⚠️ Soil retry {i+1}: {res.status_code}")
+
+        except Exception as e:
+            print(f"💥 Soil retry {i+1}: {e}")
+
+        time.sleep(1)
+
+    print("❌ Soil data failed completely")
+    return 25, 45, 1400
+
+# -------------------------
+# 🚀 FOS API
+# -------------------------
+@app.get("/fos")
+def compute_fos(lat: float, lon: float, rainfall: float = 0.0):
+    try:
+        print(f"\n🌍 Request → lat={lat}, lon={lon}, rainfall={rainfall}")
+
+        point = ee.Geometry.Point([lon, lat])
+
+        # -------------------------
+        # 🌱 Soil (SoilGrids)
+        # -------------------------
+        clay, sand, bdod = get_soil(lat, lon)
+        print(f"🌱 Soil → Clay={clay}, Sand={sand}, BDOD={bdod}")
+
+        # -------------------------
+        # ⛰️ Slope (GEE SAFE)
+        # -------------------------
+        try:
+            dem = ee.Image("USGS/SRTMGL1_003")
+            slope_img = ee.Terrain.slope(dem)
+
+            sample = slope_img.sample(point, 30).first()
+
+            slope_val = sample.get('slope').getInfo() if sample else 0
+        except Exception as e:
+            print("💥 Slope fetch failed:", e)
+            slope_val = 0
+
+        print(f"⛰️ Slope = {slope_val}")
+
+        theta = math.radians(slope_val)
+
+        # -------------------------
+        # ⚙️ PARAMETERS
+        # -------------------------
+        phi = 20 + 0.3 * sand - 0.2 * clay
+        cohesion = 0.5 * clay
+        gamma = bdod * 9.81 / 1000
+
+        # -------------------------
+        # 💧 PORE PRESSURE
+        # -------------------------
+        u = rainfall * 0.1
+        z = 2
+
+        # -------------------------
+        # 🧮 FOS
+        # -------------------------
+        denom = gamma * z * math.sin(theta) * math.cos(theta)
+
+        if denom == 0:
+            fos = None
+        else:
+            num = cohesion + (
+                (gamma * z * (math.cos(theta) ** 2) - u)
+                * math.tan(math.radians(phi))
+            )
+            fos = num / denom
+
+        print(f"🧮 FOS = {fos}")
+
+        return {
+            "clay": clay,
+            "sand": sand,
+            "phi": phi,
+            "c": cohesion,
+            "gamma": gamma,
+            "slope": slope_val,
+            "rainfall": rainfall,
+            "FOS": fos
+        }
+
+    except Exception as e:
+        print(f"💥 ERROR: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+

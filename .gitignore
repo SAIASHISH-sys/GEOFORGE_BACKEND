@@ -3,7 +3,8 @@ venv/
 .venv/
 env/
 __pycache__/
-*.pyc
+*.pyc'
+.env
 
 # ML Models & Data
 *.pkl
@@ -11,3 +12,4 @@ output.json
 
 # OS files
 .DS_Store
+geoforge-490613-13f1159ebddb.json

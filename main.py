@@ -1,24 +1,49 @@
 import numpy as np
 import pickle
 import json
+import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import ee
 import math
 import requests
 import time
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # -------------------------
 # 🌍 INIT GEE (SAFE)
 # -------------------------
-try:
-    ee.Initialize(project='soy-objective-490610-a6')
-    print("✅ GEE Initialized")
-except Exception as e:
-    print("💥 GEE INIT FAILED:", e)
-    # Raising here to match the provided script's behavior, though it might stop app startup.
-    raise e
+def initialize_gee():
+    # 1. Look for the secret string we pasted into Render
+    gee_json_str = os.environ.get("GEE_SERVICE_ACCOUNT_JSON")
 
+    if gee_json_str:
+        try:
+            # 2. Convert that string back into a Python dictionary
+            gee_info = json.loads(gee_json_str)
+            
+            # 3. Authenticate using the Service Account details
+            credentials = ee.ServiceAccountCredentials(
+                gee_info['client_email'], 
+                key_data=gee_json_str
+            )
+            ee.Initialize(credentials, project='geoforge-490613')
+            print("✅ GEE Initialized via Service Account")
+        except Exception as e:
+            print(f"💥 GEE INIT FAILED: {e}")
+            raise e
+    else:
+        # Fallback for your local machine
+        print("⚠️ No Service Account found. Falling back to local auth.")
+        ee.Initialize(project='geoforge-490613')
+
+# Call the function at the top of your script
+initialize_gee()
 # -----------------------------
 # Load ML model
 # -----------------------------
@@ -35,6 +60,15 @@ with open("output.json", "r") as f:
 # Initialize app
 # -----------------------------
 app = FastAPI(title="Earthquake API")
+
+# Setup CORS to allow requests from Flutter Web / Chrome
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Adjust this in production to specific domains like "http://localhost:X"
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods (GET, POST, etc.)
+    allow_headers=["*"],  # Allow all headers
+)
 
 # =============================
 # ===== PREDICT ENDPOINT ======
@@ -274,3 +308,7 @@ def compute_fos(lat: float, lon: float, rainfall: float = 0.0):
         print(f"💥 ERROR: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+if __name__ == "__main__":
+    # uvicorn.run(app, host="0.0.0.0", port=3000)
+    port = int(os.environ.get("PORT", 3000))
+    uvicorn.run(app,host='0.0.0.0', port=port)
